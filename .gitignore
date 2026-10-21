@@ -1,0 +1,12 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# MediaPipe models, downloaded automatically on first run
+models/
+*.part
+
+# Local tooling and OS files
+.claude/
+.DS_Store

@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Camera Heart Rate</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..800&display=swap" rel="stylesheet">
+<style>
+  /* Layout: the camera is the stage; under it one quiet line of status, then the
+     heart rate and its last minute. The outlined skin flushes red on every beat. */
+  :root {
+    --ground: #f4f2f2;      /* pale paper with a faint rose cast */
+    --ink: #1e1719;
+    --muted: #76696c;
+    --rule: #e3dcdd;
+    --blood: #c0182f;       /* oxygenated haemoglobin */
+    --stage: #1b1718;
+    --on-stage: #ffffff;
+    --scrim: rgb(20 14 16 / 0.62);
+    --flush: 255 70 92;     /* rgb triplet for the beat flush over skin */
+    --font: 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #141112; --ink: #f4eeee; --muted: #a09396; --rule: #2b2426;
+      --blood: #ff5266; --stage: #000000; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #141112; --ink: #f4eeee; --muted: #a09396; --rule: #2b2426;
+    --blood: #ff5266; --stage: #000000; color-scheme: dark;
+  }
+  /* Screen light: the page turns into a steady, neutral white light source
+     for the skin. Same specificity as the dark block above and later, so it wins. */
+  :root[data-light="on"] {
+    --ground: #ffffff; --ink: #1e1719; --muted: #6e6265; --rule: #ece6e7;
+    --blood: #c0182f; --stage: #1b1718; color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  html { background: var(--ground); }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font);
+    font-size: 16px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  main {
+    --ar: 1.7778;
+    width: min(100%, 1120px, calc(64vh * var(--ar)));
+    margin: 0 auto;
+    padding-block: clamp(16px, 3vh, 36px);
+    display: grid;
+    gap: 14px;
+  }
+
+  /* ---- camera stage ---- */
+  .stage {
+    --beat: 0;
+    position: relative;
+    width: 100%;
+    aspect-ratio: var(--ar);
+    background: var(--stage);
+    border-radius: 18px;
+    overflow: hidden;
+    cursor: crosshair;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .stage img, .stage svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .stage img { object-fit: cover; display: block; }
+  .stage svg { pointer-events: none; overflow: visible; }
+  .roi {
+    fill: rgb(var(--flush) / calc(0.04 + var(--beat) * 0.30));
+    stroke: var(--on-stage);
+    stroke-width: calc(1.5px + var(--beat) * 1.5px);
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+    filter: drop-shadow(0 0 1.5px rgb(0 0 0 / 0.55));
+  }
+  .stage[data-phase="measuring"] .roi { stroke-dasharray: 6 5; animation: march 0.9s linear infinite; }
+  @keyframes march { to { stroke-dashoffset: -11; } }
+  .placeholder {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--on-stage); opacity: 0.7; font-size: 15px; text-align: center; padding: 16px;
+  }
+  .toast {
+    position: absolute; left: 50%; bottom: 16px; transform: translate(-50%, 6px);
+    max-width: calc(100% - 32px);
+    background: var(--scrim); color: var(--on-stage);
+    padding: 8px 14px; border-radius: 999px; font-size: 14px;
+    opacity: 0; transition: opacity 0.18s, transform 0.18s; pointer-events: none;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---- status line ---- */
+  .status {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 6px 16px;
+    flex-wrap: wrap; font-size: 15px; min-height: 22px;
+  }
+  .status-text { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  .dot {
+    width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; align-self: center;
+    background: var(--muted); transform: scale(calc(1 + var(--beat, 0) * 0.45));
+  }
+  .status[data-phase="locked"] .dot { background: var(--blood); }
+  .status[data-phase="warning"] .status-main { color: var(--blood); }
+  .status-hint { color: var(--muted); }
+  .controls { display: flex; align-items: baseline; gap: 6px 18px; flex-wrap: wrap; }
+  .mode { color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; }
+  .link {
+    font: inherit; font-size: 15px; color: var(--ink); background: none; border: 0; padding: 2px 0;
+    text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 4px;
+    text-decoration-thickness: 2px; cursor: pointer;
+  }
+  .link:hover { text-decoration-color: var(--ink); }
+  .link:focus-visible { outline: 2px solid var(--blood); outline-offset: 3px; border-radius: 2px; }
+
+  /* ---- readout ---- */
+  .readout {
+    display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 28px; align-items: end;
+    padding-top: 6px; border-top: 1px solid var(--rule);
+  }
+  .reading { display: grid; justify-items: start; min-width: 4.2ch; }
+  .bpm {
+    font-size: clamp(88px, 12vw, 152px);
+    font-weight: 760;
+    font-stretch: 62%;
+    font-variation-settings: 'wdth' 62;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    line-height: 0.86;
+    transition: color 0.3s;
+  }
+  .bpm[data-quality="poor"], .bpm[data-quality="none"] { color: var(--muted); }
+  .unit { color: var(--muted); font-size: 15px; margin-top: 6px; }
+  .trend { display: grid; gap: 4px; min-width: 0; }
+  .trend canvas { width: 100%; height: clamp(120px, 17vh, 170px); display: block; }
+  .trend-axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; padding-right: 34px; }
+
+  @media (max-width: 640px) {
+    .readout { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    .stage { border-radius: 14px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .stage[data-phase="measuring"] .roi { animation: none; }
+    .toast { transition: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="stage" id="stage" data-phase="none">
+    <img id="video" alt="Live camera view. Tap any skin to measure there.">
+    <svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true"><path id="roi" class="roi" d=""/></svg>
+    <div class="placeholder" id="placeholder">Starting the camera…</div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </div>
+
+  <div class="status" id="status" data-phase="none">
+    <div class="status-text">
+      <span class="dot" id="dot"></span>
+      <span class="status-main" id="statusMain">Connecting…</span>
+      <span class="status-hint" id="statusHint"></span>
+    </div>
+    <div class="controls">
+      <button class="link" id="autoBtn" hidden>Pick skin automatically</button>
+      <span class="mode" id="mode"></span>
+      <button class="link" id="camBtn" hidden></button>
+      <button class="link" id="lightBtn">Turn screen light off</button>
+      <button class="link" id="fullBtn" hidden>Full screen</button>
+    </div>
+  </div>
+
+  <section class="readout" aria-label="Heart rate">
+    <div class="reading">
+      <output class="bpm" id="bpm" data-quality="none" aria-live="off">–</output>
+      <span class="unit">beats per minute</span>
+    </div>
+    <div class="trend">
+      <canvas id="trend" aria-label="Heart rate over the last minute"></canvas>
+      <div class="trend-axis"><span>1 min ago</span><span>now</span></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const stage = $('stage'), video = $('video'), roi = $('roi'), statusEl = $('status');
+const LABEL = { face: 'your face', palm: 'your palm', skin: 'the outlined skin', simulated: 'the simulated face' };
+const METHOD = { POS: 'POS', CHROM: 'CHROM', GREEN: 'raw green channel' };
+const HISTORY_S = 60, SAMPLE_MS = 500;
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const st = { tele: null, dirty: false, ar: null, noticeId: null, hr: null, phase: 0, history: [], lastSample: 0 };
+
+// Screen light: on unless the viewer turned it off last time.
+let light = true;
+try { light = localStorage.getItem('screenLight') !== 'off'; } catch (e) { /* storage blocked */ }
+function setLight(on, announce) {
+  light = on;
+  document.documentElement.dataset.light = on ? 'on' : 'off';
+  $('lightBtn').textContent = on ? 'Turn screen light off' : 'Turn screen light on';
+  try { localStorage.setItem('screenLight', on ? 'on' : 'off'); } catch (e) { /* ignore */ }
+  if (announce) toast(on ? 'Screen light on. Turn your display brightness all the way up.' : 'Screen light off');
+  drawTrend();
+}
+
+// ------------------------------------------------------------- connection
+let ws = null;
+function connect() {
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  ws.binaryType = 'blob';
+  ws.onclose = () => { setStatus('warning', 'Lost the connection to the server. Retrying…', ''); setTimeout(connect, 1000); };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === 'string') { st.tele = JSON.parse(ev.data); st.dirty = true; return; }
+    const url = URL.createObjectURL(ev.data);
+    const prev = video.src;
+    video.src = url;
+    if (prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+    $('placeholder').hidden = true;
+  };
+}
+const send = (msg) => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
+
+// ------------------------------------------------------------- input
+stage.addEventListener('click', (e) => {
+  const r = stage.getBoundingClientRect();
+  send({ type: 'select', x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height });
+});
+$('autoBtn').onclick = () => send({ type: 'auto' });
+$('lightBtn').onclick = () => setLight(!light, true);
+// A bigger white area is a brighter light: offer full screen where the browser allows it.
+if (document.documentElement.requestFullscreen) {
+  $('fullBtn').hidden = false;
+  $('fullBtn').onclick = () => document.fullscreenElement
+    ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => {});
+  document.addEventListener('fullscreenchange', () => {
+    $('fullBtn').textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen';
+  });
+}
+$('camBtn').onclick = () => {
+  const next = $('camBtn').dataset.id;
+  if (next) { send({ type: 'camera', value: next }); toast(`Switching to ${$('camBtn').dataset.name}`); }
+};
+
+// Demo controls stay off screen: 1/2/3 method, S simulation, arrows tune the simulation.
+document.addEventListener('keydown', (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || !st.tele) return;
+  const t = st.tele, sim = t.synthetic;
+  const methods = { '1': 'POS', '2': 'CHROM', '3': 'GREEN' };
+  if (methods[e.key]) {
+    send({ type: 'algorithm', value: methods[e.key] });
+    toast(`Method: ${METHOD[methods[e.key]]}`);
+  } else if (e.key === 's' || e.key === 'S') {
+    const to = t.source === 'synthetic' ? 'camera' : 'synthetic';
+    send({ type: 'source', value: to });
+    toast(to === 'synthetic' ? 'Simulation on' : 'Camera on');
+  } else if (sim && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    const bpm = Math.max(60, Math.min(160, sim.bpm + (e.key === 'ArrowUp' ? 5 : -5)));
+    send({ type: 'synthetic', bpm }); toast(`Simulated heart rate ${bpm} bpm`); e.preventDefault();
+  } else if (sim && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+    const motion = Math.max(0, Math.min(1, Math.round((sim.motion + (e.key === 'ArrowRight' ? 0.1 : -0.1)) * 10) / 10));
+    send({ type: 'synthetic', motion }); toast(`Simulated movement ${Math.round(motion * 100)}%`); e.preventDefault();
+  }
+});
+
+let toastTimer = 0;
+function toast(text) {
+  const el = $('toast');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+// ------------------------------------------------------------- status
+function setStatus(phase, main, hint) {
+  statusEl.dataset.phase = phase;
+  $('statusMain').textContent = main;
+  $('statusHint').textContent = hint;
+}
+
+function describe(t) {
+  const label = LABEL[t.region?.kind] || 'your skin';
+  if (t.message) return ['warning', t.message, ''];
+  if (t.source === 'idle') return ['none', 'Starting the camera…', ''];
+  const glare = t.clipped > 0.25 ? 'Part of the skin is overexposed. Move back from the light a little.' : '';
+  const hint = t.source === 'camera' && !t.region?.locked ? 'Tap any skin to measure there.' : '';
+  const truth = t.synthetic ? ` True rate ${Math.round(t.synthetic.bpm_actual ?? t.synthetic.bpm)} bpm.` : '';
+  switch (t.status) {
+    case 'NO SKIN': return ['none', 'Show your face, palm or arm to the camera.', ''];
+    case 'CALIBRATING': {
+      const left = Math.max(1, Math.ceil((t.min_buffer_s || 5) - (t.buffer_s || 0)));
+      return ['measuring', `Measuring ${label}. Hold still for ${left} more second${left === 1 ? '' : 's'}.`, ''];
+    }
+    case 'LOCKED': return ['locked', `Reading ${label}.${truth}`, glare || hint];
+    case 'WEAK SIGNAL': return ['locked', `Weak signal from ${label}. More light will help.${truth}`, glare || hint];
+    case 'HIGH MOTION NOISE': return t.moving
+      ? ['warning', 'Too much movement. Hold still.', hint]
+      : ['warning', `Weak signal from ${label}. Add light or move a little closer.`, glare || hint];
+    default: return ['none', 'Connecting…', ''];
+  }
+}
+
+// ------------------------------------------------------------- render
+function render(t) {
+  if (t.frame) {
+    const ar = t.frame[0] / t.frame[1];
+    if (ar !== st.ar) { document.querySelector('main').style.setProperty('--ar', ar.toFixed(4)); st.ar = ar; }
+  }
+  const outline = t.region?.outline || [];
+  roi.setAttribute('d', outline.map(poly => 'M' + poly.map(p => `${p[0]} ${p[1]}`).join('L') + 'Z').join(''));
+
+  const [phase, main, hint] = describe(t);
+  setStatus(phase, main, hint);
+  stage.dataset.phase = phase;
+  $('autoBtn').hidden = !(t.region && t.region.locked);
+
+  const cam = t.camera, cams = t.cameras || [];
+  $('mode').textContent = cam ? `${cam.height}p at ${Math.round(cam.fps)} fps` : '';
+  const other = cam && cams.find(c => c.id !== cam.id);
+  $('camBtn').hidden = !other;
+  if (other) {
+    $('camBtn').dataset.id = other.id;
+    $('camBtn').dataset.name = other.name;
+    $('camBtn').textContent = `Use ${other.name}${other.fps > cam.fps ? ` (${Math.round(other.fps)} fps)` : ''}`;
+  }
+
+  const live = t.bpm !== null && ['LOCKED', 'WEAK SIGNAL', 'HIGH MOTION NOISE'].includes(t.status);
+  const bpmEl = $('bpm');
+  bpmEl.textContent = live ? Math.round(t.bpm) : '–';
+  bpmEl.dataset.quality = !live ? 'none' : t.status === 'HIGH MOTION NOISE' ? 'poor' : 'good';
+  st.hr = live && t.status !== 'HIGH MOTION NOISE' ? t.bpm : null;
+
+  if (t.notice) {
+    if (st.noticeId !== null && t.notice.id !== st.noticeId && t.notice.text) toast(t.notice.text);
+    st.noticeId = t.notice.id;
+  }
+
+  const now = performance.now();
+  if (now - st.lastSample >= SAMPLE_MS) {
+    st.lastSample = now;
+    const good = live && t.status !== 'HIGH MOTION NOISE';
+    st.history.push({ t: now, bpm: good ? t.bpm : null });
+    while (st.history.length && now - st.history[0].t > HISTORY_S * 1000 + SAMPLE_MS) st.history.shift();
+    drawTrend();
+  }
+}
+
+// ------------------------------------------------------------- trend chart
+const canvas = $('trend');
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+function drawTrend() {
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const ink = cssVar('--ink'), muted = cssVar('--muted'), rule = cssVar('--rule'), blood = cssVar('--blood'), ground = cssVar('--ground');
+  const font = cssVar('--font');
+  const padR = 34, padT = 8, padB = 6;
+  const plotW = W - padR, plotH = H - padT - padB;
+
+  const pts = st.history.filter(p => p.bpm !== null);
+  let lo = 60, hi = 100;
+  if (pts.length) {
+    const vals = pts.map(p => p.bpm);
+    lo = Math.floor((Math.min(...vals) - 4) / 10) * 10;
+    hi = Math.ceil((Math.max(...vals) + 4) / 10) * 10;
+    if (hi - lo < 20) { const mid = (hi + lo) / 2; lo = Math.floor((mid - 10) / 10) * 10; hi = lo + 20; }
+  }
+  const step = hi - lo > 60 ? 20 : 10;
+  const y = (v) => padT + (1 - (v - lo) / (hi - lo)) * plotH;
+  const now = performance.now();
+  const x = (ts) => plotW * (1 - (now - ts) / (HISTORY_S * 1000));
+
+  ctx.font = `400 12px ${font}`;
+  ctx.textBaseline = 'middle';
+  for (let v = lo; v <= hi; v += step) {
+    ctx.strokeStyle = rule; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, Math.round(y(v)) + 0.5); ctx.lineTo(plotW, Math.round(y(v)) + 0.5); ctx.stroke();
+    ctx.fillStyle = muted; ctx.fillText(String(v), plotW + 8, y(v));
+  }
+
+  if (!pts.length) {
+    ctx.fillStyle = muted; ctx.textAlign = 'center'; ctx.font = `400 14px ${font}`;
+    ctx.fillText('Your heart rate over the last minute will draw here.', plotW / 2, padT + plotH / 2);
+    ctx.textAlign = 'start';
+    return;
+  }
+
+  // Split into runs so gaps (no reading) stay visible as breaks in the line.
+  const runs = [];
+  let run = [];
+  for (const p of st.history) {
+    if (p.bpm === null) { if (run.length) runs.push(run); run = []; } else run.push(p);
+  }
+  if (run.length) runs.push(run);
+
+  for (const r of runs) {
+    const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+    grad.addColorStop(0, hexA(blood, 0.16)); grad.addColorStop(1, hexA(blood, 0));
+    ctx.beginPath();
+    r.forEach((p, i) => i ? ctx.lineTo(x(p.t), y(p.bpm)) : ctx.moveTo(x(p.t), y(p.bpm)));
+    ctx.lineTo(x(r[r.length - 1].t), padT + plotH); ctx.lineTo(x(r[0].t), padT + plotH); ctx.closePath();
+    ctx.fillStyle = grad; ctx.fill();
+    ctx.beginPath();
+    r.forEach((p, i) => i ? ctx.lineTo(x(p.t), y(p.bpm)) : ctx.moveTo(x(p.t), y(p.bpm)));
+    ctx.strokeStyle = blood; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke();
+  }
+  const last = st.history[st.history.length - 1];
+  if (last.bpm !== null) {
+    ctx.beginPath(); ctx.arc(x(last.t), y(last.bpm), 4.5, 0, Math.PI * 2);
+    ctx.fillStyle = blood; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = ground; ctx.stroke();
+  }
+}
+
+function hexA(color, a) {
+  const m = color.match(/^#([0-9a-f]{6})$/i);
+  if (!m) return color;
+  const n = parseInt(m[1], 16);
+  return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
+window.addEventListener('resize', drawTrend);
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawTrend);
+
+// ------------------------------------------------------------- frame loop
+let lastTs = performance.now();
+function frame(ts) {
+  const dt = Math.min(0.1, (ts - lastTs) / 1000); lastTs = ts;
+  if (st.dirty && st.tele) { render(st.tele); st.dirty = false; }
+  let beat = 0;
+  if (st.hr && !reduceMotion && !light) {
+    st.phase = (st.phase + dt * st.hr / 60) % 1;
+    beat = st.phase < 0.12 ? st.phase / 0.12 : Math.exp(-(st.phase - 0.12) * 7);   // fast rise, slow fall
+  }
+  stage.style.setProperty('--beat', beat.toFixed(3));
+  statusEl.style.setProperty('--beat', beat.toFixed(3));
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+setLight(light, false);
+connect();
+</script>
+</body>
+</html>
